@@ -1,0 +1,164 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Release build of the AL71 images (the README's build steps, run by the CI):
+  # every image passes the interrupt-table / overlay check, and the built
+  # files get a build-provenance attestation. The comparison with firmware/
+  # is informative: the same source and SDCC 4.5.0 give the same bytes on the
+  # same platform, but SDCC's register allocation differs between hosts (the
+  # Linux build differs from the macOS-built images in one function), so a
+  # mismatch here is not a failure. What the built images do is checked by
+  # the simulator tests below, on the release build as on the debug build.
+  release-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: smk
+        skipPush: true
+    - name: Setup
+      run: nix develop --command meson setup build-release --buildtype=release
+    - name: Build
+      run: nix develop --command meson compile -C build-release yunzii-al71_ansi_smk.hex yunzii-al71_usjis_smk.hex yunzii-al71_ansi-via_smk.hex yunzii-al71_usjis-via_smk.hex yunzii-al71_leddiag_smk.hex
+    - name: Archive firmware
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: yunzii-al71-release
+        path: |
+          build-release/yunzii-al71_*_smk.hex
+          build-release/yunzii-al71_*_smk.map
+          build-release/yunzii-al71_*_smk.mem
+    - name: Toolchain
+      run: nix develop --command sdcc --version
+    - name: Compare with the images in firmware/ (informative, see above)
+      continue-on-error: true
+      run: cd build-release && shasum -a 256 --ignore-missing -c ../firmware/yunzii-al71/SHA256SUMS
+    - name: Attest build provenance
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: build-release/yunzii-al71_*_smk.hex
+
+  # Everything smk builds, debug and release, both NKRO settings (upstream's matrix).
+  build:
+    strategy:
+      matrix:
+        nkro: [enabled, disabled]
+        buildtype: [debug, release]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: smk
+        skipPush: true
+    - name: Setup
+      run: nix develop --command meson setup build -Dnkro=${{ matrix.nkro }} -Dbuildtype=${{ matrix.buildtype }}
+    - name: Build
+      run: nix develop --command meson compile -C build
+    - name: Build library examples
+      run: nix develop --command meson compile -C build examples
+
+  # The simulator tests, one job per file and build type (the long ones take
+  # 10-20 minutes): the debug build has the source-level checks, the release
+  # build is what a user flashes. The checks that need the original
+  # firmware's image skip here.
+  sim-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        buildtype: [debug, release]
+        test: [test_usb, test_boot, test_stack, test_source_breakpoints,
+               test_air75, test_air75_usjis,
+               test_f65, test_f65_usjis, test_f65_fnrow, test_f65_led, test_f65_indicators, test_f65_radio, test_f65_backlight,
+               test_f65_via, test_f65_mouse, test_al71]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: smk
+        skipPush: true
+    - name: Setup
+      run: nix develop --command meson setup build --buildtype=${{ matrix.buildtype }}
+    - name: Build firmware
+      run: nix develop --command meson compile -C build
+    - name: Run ${{ matrix.test }} (${{ matrix.buildtype }})
+      env:
+        SMK_SIM_TIMEOUT: "60"   # a runner is slower than a desktop; one simulator command may take seconds
+      run: |
+        nix develop --command bash -c '
+          export SMK_UCSIM=$(command -v ucsim-sh68f90)
+          cd tests && python3 -m unittest -v ${{ matrix.test }}'
+
+  smk-console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/smk-console
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1 (stable)
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        workspaces: tools/smk-console
+    - name: Format
+      run: cargo fmt --check
+    - name: Lint
+      run: cargo clippy --all-targets -- -D warnings
+    - name: Build
+      run: cargo build --release
+
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: smk
+        skipPush: true
+    - name: Setup
+      run: nix develop --command meson setup build
+    - name: Lint
+      run: nix develop --command ninja -C build clang-format-check
+    - name: Lint meson
+      run: nix develop --command meson format -c meson.format --check-only --recursive src meson.build meson.options
+
+  # One status for branch protection: every job above passed.
+  ci-ok:
+    if: always()
+    needs: [release-images, build, sim-tests, smk-console, format-check]
+    runs-on: ubuntu-latest
+    steps:
+    - name: All jobs passed
+      run: |
+        echo '${{ toJSON(needs) }}'
+        test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "false"
