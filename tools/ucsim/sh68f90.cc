@@ -298,7 +298,7 @@ class cl_sh68f90_sie : public cl_hw
         if (bas) {
             // The firmware reads some pins bit-wise (P5: rows b3/b4, CONN_MODE b5,
             // OS switch b6; P7: key rows b0-b3 -- b0 is the nuphy-air75 F-row --
-            // the yunzii-al71 OS switch b4, the nuphy-air75 power inputs b5/b7).
+            // b4 where a board has an input there, the nuphy-air75 power inputs b5/b7).
             // Hook those bit cells so bit reads see the pin level too (an output
             // bit reads its latch, port_read). Bit addr of Px.i = Px + i.
             int p5in[] = {3, 4, 5, 6}, p7in[] = {0, 1, 2, 3, 4, 5, 7};

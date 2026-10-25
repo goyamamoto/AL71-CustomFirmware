@@ -33,7 +33,7 @@ YUNZII AL71 キーボード用のオープンソースファームウェアで�
 | `usjis-via` | `usjis` に、VIA でキー配置を変える機能 | `firmware/` の `yunzii-al71_usjis-via_smk.hex` |
 | `ansi-via` | `ansi` に、VIA でキー配置を変える機能 | `firmware/` の `yunzii-al71_ansi-via_smk.hex` |
 
-VIA のレイアウトは、最初は `ansi` / `usjis` と同じキー配置です。[VIA を使う](#via-を使う)を見てください。実機で確かめたのは `usjis-via` のこのイメージです。`ansi` は前のビルド（キーは同じで、ケースの真ん中の LED の表示と、スロットごとの Bluetooth の名前の前）を実機で確かめています。`usjis` と `ansi-via` はシミュレータで確かめています。
+VIA のレイアウトは、最初は `ansi` / `usjis` と同じキー配置です。[VIA を使う](#via-を使う)を見てください。実機で確かめたのは `usjis-via` のこのイメージです。`ansi` は前のビルド（キーは同じで、ケースの真ん中の LED の表示、スロットごとの Bluetooth の名前、その後のレイヤータップ、マウスキー、名前の変更の前）を実機で確かめています。`usjis` と `ansi-via` はシミュレータで確かめています。
 
 ## 対応キーボード
 
@@ -104,7 +104,7 @@ VIA のレイアウトは、最初は `ansi` / `usjis` と同じキー配置で�
 2. Settings で「Show Design tab」をオンにし、Design でこのリポジトリの [via.json](src/keyboards/yunzii-al71/via.json) を読み込む。
 3. Configure で「Authorize device」を押し、「YUNZII AL71 (SMK)」を選ぶ。
 
-4 つのレイヤーは Windows の基本、Mac の基本、Windows の Fn、Mac の Fn です。変更は最後の変更から約 0.5 秒後にフラッシュに保存され、Bluetooth と 2.4 GHz でも使われます。VIA で設定できるのは、普通のキー、修飾付きのキー（Ctrl+C など）、モッドタップ、`MO`、レイヤータップ（`LT`。例えば Space を押している間だけマウスキーの層にする）、マウスキー、メディアキー、このキーボードのキー（US-JIS、リンク、電池、Fn の数字列、照明）です。トグル、ワンショット、マクロには対応しておらず、照明は Fn のキーで操作します。VIA は USB ID ごとに定義を 1 つしか持たず、他のキーボード（F65 など）も 258a:010c を使います。それらで VIA を使った後は、このファイルをもう一度読み込んでください。詳しくは [docs/keyboards/yunzii-al71.md](docs/keyboards/yunzii-al71.md) と [docs/keyboards/aula-f65-v1.md](docs/keyboards/aula-f65-v1.md#via)（英語）。
+4 つのレイヤーは Windows の基本、Mac の基本、Windows の Fn、Mac の Fn です。変更は最後の変更から約 0.5 秒後にフラッシュに保存され、Bluetooth と 2.4 GHz でも使われます。VIA で設定できるのは、普通のキー、修飾付きのキー（Ctrl+C など）、モッドタップ、`MO`、レイヤータップ（`LT`。例えば Space を押している間だけマウスキーの層にする）、マウスキー、メディアキー、このキーボードのキー（US-JIS、リンク、電池、Fn の数字列、照明）です。トグル、ワンショット、マクロには対応しておらず、照明は Fn のキーで操作します。レイヤー 2 と 3 には好きなキーを置けますが、どちらも Fn のレイヤーとして扱われます（Fn の表示灯、Backspace と V での設定の初期化）。VIA は USB ID ごとに定義を 1 つしか持たず、他のキーボード（F65 など）も 258a:010c を使います。それらで VIA を使った後は、このファイルをもう一度読み込んでください。詳しくは [docs/keyboards/yunzii-al71.md](docs/keyboards/yunzii-al71.md) と [docs/keyboards/aula-f65-v1.md](docs/keyboards/aula-f65-v1.md#via)（英語）。
 
 ## ビルド
 

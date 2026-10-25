@@ -192,8 +192,13 @@ void f65_switch_tick(void)
 
 #define PAIR_HOLD_MS 3000
 
-static __bit            pair_armed; // 0x2c.5
+static __bit            pair_armed; // a link key is down: its pairing hold runs
 static __xdata uint16_t pair_since;
+#ifdef RF_NAME_SLOT_BASE
+// The slot key's names did not go out on its press; pair_since then times the
+// next try.
+static __bit names_due;
+#endif
 
 void f65_pair_cancel(void)
 {
@@ -228,13 +233,22 @@ void f65_link_key(uint8_t slot, bool pressed)
 #ifdef RF_NAME_SLOT_BASE
         // On the press, so a hold pairs 3 s after the names: the Air75's
         // module drops a pairing request that follows a name change closely
-        // (peripherals/bk3632/rf_controller.c).
-        rf_name_slot(slot, 20);
+        // (peripherals/bk3632/rf_controller.c). If the module is too busy to
+        // take them now, f65_pair_tick and the release try again.
+        names_due = !rf_name_slot(slot, 20);
 #endif
         pair_since = rf_ms();
         pair_armed = 1;
     } else {
         if (transport == RF_BT && pair_armed) {
+#ifdef RF_NAME_SLOT_BASE
+            if (names_due) {
+                // one more try; the select goes out either way, since a
+                // bonded host reconnects whatever the module's name is, and
+                // the next slot key or pairing sends the names again
+                names_due = !rf_name_slot(bt_slot, 20);
+            }
+#endif
             select_and_resync(0, bt_slot);
         }
         pair_armed = 0;
@@ -247,7 +261,22 @@ void f65_pair_tick(void)
         pair_armed = 0; // a hold carried into the wired position is over
         return;
     }
-    if (!pair_armed || (uint16_t)(rf_ms() - pair_since) < PAIR_HOLD_MS) {
+    if (!pair_armed) {
+        return;
+    }
+#ifdef RF_NAME_SLOT_BASE
+    if (names_due && transport == RF_BT) {
+        // The names did not go out on the press (the module was busy): try
+        // again every 100 ms, and pair only 3 s after they have gone out,
+        // never right after a name change.
+        if ((uint16_t)(rf_ms() - pair_since) >= 100) {
+            names_due  = !rf_name_slot(bt_slot, 20);
+            pair_since = rf_ms();
+        }
+        return;
+    }
+#endif
+    if ((uint16_t)(rf_ms() - pair_since) < PAIR_HOLD_MS) {
         return;
     }
     pair_armed = 0;

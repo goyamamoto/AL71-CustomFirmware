@@ -172,6 +172,15 @@ void kb_update_switches()
 #ifdef OS_SWITCH_MAC
     kb_os_switch_tick();
 #endif
+#ifdef MOUSEKEY_ENABLE
+    // A drag or a scroll held over a connected wireless link: no idle sleep
+    // under it. Not without a host (reconnecting, pairing, or the middle
+    // position without a configured host): a key held down in a bag must
+    // not keep the board and the module awake.
+    if (mousekey_active() && f65_transport() != RF_USB && rf_connected_latched()) {
+        rf_note_activity();
+    }
+#endif
     rf_power_tick(USB_PWR_DET, !CHG_STAT, f65_transport() != RF_USB);
     f65_sleep_tick();
 }
@@ -339,6 +348,21 @@ static void frow(uint8_t n, bool pressed)
 
 static bool reset_armed;     // SETTINGS_RESET_HOLD_KEY went down under Fn and is held
 static bool reset_swallowed; // SETTINGS_RESET_KEY went down under Fn and was not sent
+
+bool kb_lt_release_waits(uint16_t keycode)
+{
+#ifdef USJIS
+    if (usjis_change_pending()) {
+        return true; // the change waits for every key up: the waiting presses come first
+    }
+#endif
+    return (reset_armed && keycode == SETTINGS_RESET_HOLD_KEY) || (grave_shifted && keycode == KC_GRV);
+}
+
+void kb_key_activity(void)
+{
+    rf_note_activity();
+}
 
 bool kb_process_record(uint16_t keycode, bool key_pressed)
 {
