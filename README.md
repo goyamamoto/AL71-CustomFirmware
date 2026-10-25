@@ -33,7 +33,7 @@ Every image has the same hardware support, the boot escape, the Bluetooth names 
 | `usjis-via` | `usjis` with the keymap editable from VIA | `yunzii-al71_usjis-via_smk.hex` in `firmware/` |
 | `ansi-via` | `ansi` with the keymap editable from VIA | `yunzii-al71_ansi-via_smk.hex` in `firmware/` |
 
-The VIA layouts start with the same keymap as `ansi` / `usjis`. See [Using VIA](#using-via). The `usjis-via` image is the one checked on the board; `ansi` was checked on the board in an earlier build (the same keys, before the middle LED on the case and the Bluetooth names per slot); `usjis` and `ansi-via` are checked in the simulator.
+The VIA layouts start with the same keymap as `ansi` / `usjis`. See [Using VIA](#using-via). The `usjis-via` image is the one checked on the board; `ansi` was checked on the board in an earlier build (the same keys, before the middle LED on the case, the Bluetooth names per slot and the later changes to the layer-tap keys, the mouse keys and the names); `usjis` and `ansi-via` are checked in the simulator.
 
 ## Supported keyboards
 
@@ -104,7 +104,7 @@ With a `-via` image written and the switch in the Line position (USB):
 2. In Settings, turn on "Show Design tab". In Design, load [via.json](src/keyboards/yunzii-al71/via.json) from this repository.
 3. In Configure, click "Authorize device" and pick "YUNZII AL71 (SMK)".
 
-The four layers are Windows base, Mac base, Windows Fn and Mac Fn. Changes are saved to flash about 0.5 s after the last one and are used over Bluetooth and 2.4 GHz too. VIA can set basic keys, modified keys (such as Ctrl+C), mod-taps, `MO`, layer-taps (`LT`, for example Space held for a layer of mouse keys), mouse keys, media keys and this keyboard's own keys (US-JIS, the link, battery, Fn-row and lighting keys); toggles, one-shot keys and macros are not supported, and the lighting stays on its Fn keys. VIA keeps one definition per USB ID, and other keyboards (the F65 among them) share 258a:010c: load this file again after using VIA with one of them. Details: [docs/keyboards/yunzii-al71.md](docs/keyboards/yunzii-al71.md) and [docs/keyboards/aula-f65-v1.md](docs/keyboards/aula-f65-v1.md#via).
+The four layers are Windows base, Mac base, Windows Fn and Mac Fn. Changes are saved to flash about 0.5 s after the last one and are used over Bluetooth and 2.4 GHz too. VIA can set basic keys, modified keys (such as Ctrl+C), mod-taps, `MO`, layer-taps (`LT`, for example Space held for a layer of mouse keys), mouse keys, media keys and this keyboard's own keys (US-JIS, the link, battery, Fn-row and lighting keys); toggles, one-shot keys and macros are not supported, and the lighting stays on its Fn keys. Layers 2 and 3 can hold any keys; the board treats both as Fn layers (the Fn indicators, the settings-reset chord on Backspace and V). VIA keeps one definition per USB ID, and other keyboards (the F65 among them) share 258a:010c: load this file again after using VIA with one of them. Details: [docs/keyboards/yunzii-al71.md](docs/keyboards/yunzii-al71.md) and [docs/keyboards/aula-f65-v1.md](docs/keyboards/aula-f65-v1.md#via).
 
 ## Building
 

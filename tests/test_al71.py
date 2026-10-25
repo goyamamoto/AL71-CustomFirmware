@@ -317,7 +317,7 @@ class TestFnLayer(KeymapCase):
             with self.subTest(key=key):
                 self.assertTap(kb, [FN, key], report(0, code))
 
-    def test_fn_a_and_fn_s_send_nothing(self):
+    def test_fn_a_and_fn_s_are_a_and_s(self):
         """No OS keys: Fn + A / S are transparent to the base A / S."""
         kb = self.session()
         self.assertTap(kb, [FN, (1, 2)], report(0, 0x04))
@@ -450,8 +450,10 @@ class TestSlotNames(RadioCase):
     slot's, never between that press and the pairing request of a hold. Every
     scenario also gets RadioCase's frame checks (sums, P0.2 lead and gap)."""
 
+    FW = AL71_FW
+
     def dev(self, fw=None, position=SWITCH_USB, **kw):
-        fw = fw or AL71_FW
+        fw = fw or self.FW
         need(fw)
         d = OursAl71(fw)
         self.addCleanup(self._check_and_close, d)
@@ -509,6 +511,102 @@ class TestSlotNames(RadioCase):
         self.assertLess(last_name, pair)
         self.assertGreaterEqual(self.cycles_ms(env[last_name]["t"], env[pair]["t"]), 3000)
 
+    def test_a_busy_module_on_the_press_gets_the_names_later_and_pairs_3_s_after(self):
+        """The module busy (P4.7 low) when Fn + E goes down: the names cannot
+        go out then. Once it is free they go out while the key is held, each
+        once, and the pairing request comes 3 s after them, not 3 s after the
+        press."""
+        d = self.linked()
+        d.radio.ready(False)
+        m = d.mark()
+        d.press(d.fn, ms=20)
+        d.press(d.BT3, ms=1000)
+        self.assertEqual(name_frames(d.frames(m)), [], "nothing while the module is busy")
+        d.radio.ready(True)
+        d.ms(3600)
+        d.release(d.BT3, ms=20)
+        d.release(d.fn, ms=50)
+        env = [e for e in self.envelopes(d)[m:] if e["bytes"]]
+        got = [e["bytes"] for e in env]
+        self.assertEqual(name_frames(got), slot_names(3))
+        self.assertEqual(links(got), [sel(1, 3)], "the pairing request, after the names")
+        last_name = max(i for i, f in enumerate(got) if f[1] == 0x09)
+        pair = next(i for i, f in enumerate(got) if f[:4] == sel(1, 3)[:4])
+        self.assertGreaterEqual(self.cycles_ms(env[last_name]["t"], env[pair]["t"]), 3000)
+
+    def test_a_busy_module_on_a_quick_press_gets_the_names_on_the_release(self):
+        """The module busy when Fn + W goes down, free again before the key
+        comes up and before the first retry (100 ms): the release tries once
+        more, so the names go out on it, before the select."""
+        d = self.linked()
+        d.radio.ready(False)
+        m = d.mark()
+        d.press(d.fn, ms=20)
+        d.press(d.BT2, ms=50)
+        self.assertEqual(name_frames(d.frames(m)), [], "nothing while the module is busy")
+        d.radio.ready(True)
+        r = d.mark()
+        d.release(d.BT2, ms=200)
+        d.release(d.fn, ms=20)
+        self.assertEqual(name_frames(d.frames(r)), slot_names(2), "the names on the release")
+        got = d.frames(m)
+        self.assertEqual(links(got), [sel(0, 2)])
+        self.assertLess(max(i for i, f in enumerate(got) if f[1] == 0x09), got.index(sel(0, 2)))
+
+    def test_a_module_busy_through_a_quick_press_selects_and_names_on_the_next_press(self):
+        """Busy from the press until after the release: the select goes out
+        once the module is free, without the names; the next press of that
+        slot's key sends them."""
+        d = self.linked()
+        d.radio.ready(False)
+        m = d.mark()
+        d.press(d.fn, ms=20)
+        d.press(d.BT2, ms=50)
+        d.release(d.BT2, ms=100)
+        d.release(d.fn, ms=20)
+        d.radio.ready(True)
+        d.ms(200)
+        d.status(2, 3)
+        d.ms(700)
+        got = d.frames(m)
+        self.assertEqual(name_frames(got), [])
+        self.assertEqual(links(got), [sel(0, 2)], "the select without the names")
+        m = d.mark()
+        self.hold(d, d.BT2, 50)
+        got = d.frames(m)
+        self.assertEqual(name_frames(got), slot_names(2), "the names on the next press")
+        self.assertEqual(links(got), [sel(0, 2)])
+
+    def test_a_module_busy_between_the_names_gets_the_second_later_alone(self):
+        """The module goes busy right after the BT5.0 name of Fn + E's slot has
+        started: the BT3.0 name follows once it is free, alone (the BT5.0 name
+        is not sent again), and the pairing request comes 3 s after it."""
+        d = self.linked()
+        m = d.mark()
+        d.press(d.fn, ms=20)
+        d.keys.press(*d.BT3)
+        d.brk(d._a("rf_name_slot"))
+        self.assertEqual(d.stopped_at(d.run()), d._a("rf_name_slot"))
+        d.cmd("delete")
+        d.brk(d._a("delay_ms"))                       # the 32 ms after the first name's tx_start
+        self.assertEqual(d.stopped_at(d.run()), d._a("delay_ms"))
+        d.cmd("delete")
+        d.radio.ready(False)
+        d.ms(500)
+        self.assertEqual(name_frames(d.frames(m)), slot_names(3)[:1], "the BT5.0 name only")
+        d.radio.ready(True)
+        d.ms(3600)
+        d.release(d.BT3, ms=20)
+        d.release(d.fn, ms=50)
+        env = [e for e in self.envelopes(d)[m:] if e["bytes"]]
+        got = [e["bytes"] for e in env]
+        self.assertEqual(name_frames(got), slot_names(3), "each name once")
+        self.assertEqual(links(got), [sel(1, 3)])
+        first, second = [i for i, f in enumerate(got) if f[1] == 0x09]
+        self.assertGreaterEqual(self.cycles_ms(env[first]["t"], env[second]["t"]), 400)
+        pair = next(i for i, f in enumerate(got) if f[:4] == sel(1, 3)[:4])
+        self.assertGreaterEqual(self.cycles_ms(env[second]["t"], env[pair]["t"]), 3000)
+
     def test_back_and_forth(self):
         d = self.linked()
         m = d.mark()
@@ -558,6 +656,12 @@ class TestSlotNames(RadioCase):
         self.into(d, SWITCH_BT, 1)
         d.ms(300)
         self.assertEqual(name_frames(d.frames(m)), [], "the slot keys do nothing in 2.4 GHz, slot 1 already named")
+
+
+class TestSlotNamesVia(TestSlotNames):
+    """The same on the usjis-via image."""
+
+    FW = AL71_VIA_FW
 
 
 class TestSleep(unittest.TestCase):
@@ -1101,6 +1205,21 @@ class TestViaMiddleLed(Al71ViaRig, unittest.TestCase):
         kb.tap(self.SPACE, hold=40, after=60)        # a tap: Space, the LED stays dark
         self.assertNotEqual(kb.duty(4, 5)[1], 0x0400)
 
+    def test_on_when_a_key_rolled_under_it_decides_the_layer(self):
+        """Well inside the tapping term: D goes down and up while Space is
+        held, which makes Space its layer; the LED is on from then until
+        Space comes up."""
+        kb = self.kb()
+        kb.set_keycode(0, self.SPACE[1], self.SPACE[0], 0x4000 | 3 << 8 | 0x2C)
+        kb.ms(50)
+        kb.press(self.SPACE, ms=40)
+        self.assertNotEqual(kb.duty(4, 5)[1], 0x0400, "dark while Space is undecided")
+        kb.press((3, 2), ms=40)
+        kb.release((3, 2), ms=60)
+        self.assertEqual(kb.duty(4, 5)[1], 0x0400, "on: layer 3 from the roll")
+        kb.release(self.SPACE, ms=60)
+        self.assertNotEqual(kb.duty(4, 5)[1], 0x0400, "dark again")
+
 
 class TestViaIsp(unittest.TestCase):
     """sinowisp's report 5 on interface 1 of the VIA images (the keyboard and
@@ -1139,6 +1258,10 @@ class TestMouseUsb(Al71ViaRig, test_f65_mouse.TestMouseUsb):
 
 class TestMouseUsbAnsi(Al71ViaRig, test_f65_mouse.TestMouseUsb):
     FW = AL71_ANSI_VIA_FW
+
+
+class TestMouseUsbSuspend(Al71ViaRig, test_f65_mouse.TestMouseUsbSuspend):
+    """test_f65_mouse's USB suspend test on the AL71."""
 
 
 class TestMouseRadio(Al71ViaRig, test_f65_mouse.TestMouseRadio):

@@ -33,7 +33,7 @@ from pathlib import Path
 from sim import REPO_ROOT, Sim, load_symbols, skip_or_fail, get_descriptor, DESC_CONFIGURATION
 from test_air75 import read_ihex
 from f65_devices import OursF65
-from f65_radio import SWITCH_USB
+from f65_radio import SWITCH_USB, SWITCH_24G
 
 VIA_FW = os.environ.get("SMK_F65_VIA_FIRMWARE") or str(REPO_ROOT / "build" / "aula-f65-v1_usjis-via_smk.hex")
 VIA_ANSI_FW = os.environ.get("SMK_F65_ANSI_VIA_FIRMWARE") or str(REPO_ROOT / "build" / "aula-f65-v1_ansi-via_smk.hex")
@@ -751,6 +751,162 @@ class TestViaLayerTap(ViaCase):
         kb.tap(self.S_KEY, hold=40, after=40)
         self.assertEqual(self.keys(kb, n), [KC_B, 0, self.KC_S, 0], "B under the layer, S after it")
 
+    def test_the_tapping_term_alone_makes_it_the_layer(self):
+        """A held past the term, then S goes down and stays down: B goes out
+        on S's press, before anything comes up (no other event decides)."""
+        kb = self.rig()
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=2000)                          # the term: 285 scans, under 1 s in the simulator
+        kb.press(self.S_KEY, ms=60)
+        self.assertEqual(self.keys(kb, n), [KC_B], "B on the press")
+        kb.release(self.S_KEY, ms=40)
+        kb.release(A, ms=40)
+        self.assertEqual(self.keys(kb, n), [KC_B, 0])
+
+    def test_held_past_the_term_and_released_alone_sends_nothing(self):
+        kb = self.rig()
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=2000)
+        kb.release(A, ms=40)
+        self.assertEqual(self.keys(kb, n), [], "the layer, no Space")
+        kb.tap(self.S_KEY, hold=40, after=40)
+        self.assertEqual(self.keys(kb, n), [self.KC_S, 0], "the layer has ended: S")
+
+    def test_a_key_let_go_while_it_is_undecided_goes_up_at_once(self):
+        """D down before A, released while A is undecided: D goes up on the
+        host at once, not when A is decided (a fast key repeat would repeat
+        it meanwhile). A is decided later by the term."""
+        kb = self.rig()
+        n = len(kb.ep1_reports())
+        kb.press(self.D_KEY, ms=40)
+        kb.press(A, ms=40)
+        kb.release(self.D_KEY, ms=40)
+        self.assertEqual(self.keys(kb, n), [self.KC_D, 0], "D up while A is undecided")
+        kb.ms(2000)                                   # A still held, past the term
+        kb.tap(self.S_KEY, hold=40, after=40)
+        kb.release(A, ms=40)
+        self.assertEqual(self.keys(kb, n), [self.KC_D, 0, KC_B, 0], "then the layer")
+
+    def test_a_tap_after_an_early_release(self):
+        """D down, A down, D up (at once), A up: the release did not decide A,
+        which is a tap of Space."""
+        kb = self.rig()
+        n = len(kb.ep1_reports())
+        kb.press(self.D_KEY, ms=40)
+        kb.press(A, ms=40)
+        kb.release(self.D_KEY, ms=40)
+        kb.release(A, ms=40)
+        self.assertEqual(self.keys(kb, n), [self.KC_D, 0, self.KC_SPC, 0])
+
+    def test_a_modified_key_let_go_while_it_is_undecided_waits(self):
+        """Shift+1 (a modified key at D) down, A down, S down, Shift+1 up, A
+        up: Shift+1's release waits, so Space and S go out with its Shift, as
+        in a roll without a layer-tap key."""
+        kb = self.rig()
+        kb.set_keycode(0, self.D_KEY[1], self.D_KEY[0], 0x0200 | 0x1E)   # LSFT(KC_1)
+        kb.press(self.D_KEY, ms=40)
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=40)
+        kb.press(self.S_KEY, ms=40)
+        kb.release(self.D_KEY, ms=40)
+        self.assertEqual(kb.ep1_reports()[n:], [], "everything waits for A")
+        kb.release(A, ms=40)
+        downs = {}
+        for r in kb.ep1_reports()[n:]:
+            for k in r[2:8]:
+                if k in (self.KC_SPC, self.KC_S) and k not in downs:
+                    downs[k] = r[0]                  # the modifiers when the key first shows
+        self.assertEqual(sorted(downs), sorted([self.KC_SPC, self.KC_S]), kb.ep1_reports()[n:])
+        self.assertTrue(all(m & 0x02 for m in downs.values()), kb.ep1_reports()[n:])
+        kb.release(self.S_KEY, ms=40)
+
+    def test_an_early_release_in_a_replay(self):
+        """A (LT) down, F down, D (LT) down, F up: F's release decides A as
+        its layer; F's press and D's go on, D is undecided, and F's waiting
+        release goes on at once as well, before D is decided."""
+        kb = self.rig()
+        kb.set_keycode(0, self.D_KEY[1], self.D_KEY[0], 0x4000 | 2 << 8 | self.KC_ENT)
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=40)
+        kb.press(self.F_KEY, ms=40)
+        kb.press(self.D_KEY, ms=40)
+        kb.release(self.F_KEY, ms=60)
+        self.assertEqual(self.keys(kb, n), [self.KC_F, 0], "F down and up, D still undecided")
+        kb.release(self.D_KEY, ms=40)
+        kb.release(A, ms=40)
+
+    def test_the_settings_reset_chord_with_a_layer_tap_key_in_between(self):
+        """Fn held, Backspace down (the chord armed), A (LT) down, V down,
+        Backspace up, A up: Backspace's release waits like V's press, so V
+        still finds the chord armed and the settings and keymap are reset (A
+        is A again)."""
+        kb = self.rig()
+        fn = self.fn_key()
+        kb.press(fn, ms=40)
+        kb.press(BSPC, ms=40)
+        kb.press(A, ms=40)
+        kb.press(V, ms=40)
+        kb.release(BSPC, ms=40)
+        kb.release(A, ms=40)
+        kb.release(V, fn, ms=40)
+        self.assertEqual(kb.get_keycode(0, A[1], A[0]), KC_A, "the reset put A back")
+
+    def test_tilde_keeps_its_shift_for_the_keys_that_waited(self):
+        """Fn + Right Shift + Esc gives ~ with a Shift of its own; A (LT) down,
+        C down, Esc up, A up: Esc's release waits, so C goes out with that
+        Shift, as it would without a layer-tap key in the roll."""
+        kb = self.rig()
+        fn = self.fn_key()
+        kb.press(fn, ms=40)
+        kb.press(self.RSFT_KEY, ms=40)
+        kb.press(ESC, ms=40)
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=40)
+        kb.press(self.C_KEY, ms=40)
+        kb.release(ESC, ms=40)
+        kb.release(A, ms=40)
+        mods = [r[0] for r in kb.ep1_reports()[n:] if self.KC_C in r[2:8]]
+        self.assertTrue(mods and mods[0] & 0x02, kb.ep1_reports()[n:])
+        kb.release(self.C_KEY, self.RSFT_KEY, fn, ms=40)
+
+    def test_a_us_jis_change_waits_for_the_keys_that_waited(self):
+        """US-JIS on; D held; US-JIS off requested (it waits for every key up);
+        A (LT) down, Backslash down, D up, A up: D's release waits too, so
+        Backslash still goes out translated (INT1), as without the layer-tap
+        key in the roll."""
+        if _layout(self.FW) != "usjis":
+            self.skipTest("US-JIS is in the usjis layouts")
+        kb = self.rig()
+        kb.set_keycode(0, self.F_KEY[1], self.F_KEY[0], 0x7E00)   # USJIS_TOG at F
+        kb.tap(self.F_KEY, hold=40, after=40)                      # US-JIS on
+        self.assertEqual(kb.get_xram(kb._a("user_settings") + 9)[0], 1, "US-JIS on")
+        kb.press(self.D_KEY, ms=40)
+        kb.tap(self.F_KEY, hold=40, after=40)                      # off, after every key is up
+        n = len(kb.ep1_reports())
+        kb.press(A, ms=40)
+        kb.press(self.BSLS_KEY, ms=40)
+        kb.release(self.D_KEY, ms=40)
+        kb.release(A, ms=40)
+        keys = [k for r in kb.ep1_reports()[n:] for k in r[2:8] if k]
+        self.assertIn(0x87, keys, kb.ep1_reports()[n:])            # INT1
+        self.assertNotIn(0x31, keys)                                 # not a plain backslash
+        kb.release(self.BSLS_KEY, ms=40)
+
+    def test_a_layer_tap_press_counts_as_activity(self):
+        """2.4 GHz, the idle seconds put at 55 (the linked sleep comes at 61):
+        A (LT) held past the term, with no other key, starts them again."""
+        kb = self.rig()
+        kb.switch(SWITCH_24G, 200)
+        kb.status(0, 3)
+        kb.ms(700)
+        idle_s = kb._xdata_static("f65_rf", "idle_s")
+        kb.cmd("set mem xram 0x%x 0x37 0x00" % idle_s)
+        kb.cmd("set mem xram 0x%x 0x00 0x00" % kb._xdata_static("f65_rf", "idle_ms"))
+        kb.press(A, ms=1500)
+        lo, hi = kb.get_xram(idle_s, 2)
+        self.assertLess(lo | hi << 8, 3, "the press restarted the idle seconds")
+        kb.release(A, ms=40)
+
     def test_a_key_pressed_and_released_while_held_is_under_the_layer(self):
         kb = self.rig()
         n = len(kb.ep1_reports())
@@ -785,8 +941,9 @@ class TestViaLayerTap(ViaCase):
         kb.release(self.S_KEY, ms=40)
         self.assertEqual(self.last_report(kb), [0] * 8)
 
-    D_KEY, RSFT_KEY, N3_KEY = (3, 2), (13, 3), (3, 0)
-    KC_ENT, KC_TRNS = 0x28, 0x01
+    D_KEY, F_KEY, RSFT_KEY, N3_KEY, QUOT_KEY, TAB_KEY = (3, 2), (4, 2), (13, 3), (3, 0), (11, 2), (0, 1)
+    KC_ENT, KC_TRNS, KC_D, KC_F, KC_C = 0x28, 0x01, 0x07, 0x09, 0x06
+    C_KEY, BSLS_KEY = (3, 3), (13, 1)
     ROW2 = [(c, 2) for c in range(2, 11)]          # S D F G H J K L ;
 
     def test_two_layer_tap_keys_rolled_both_tap(self):
@@ -877,6 +1034,73 @@ class TestViaLayerTap(ViaCase):
         print(f"\n[via] layer-tap replay: stack {used}/{room} bytes")
         self.assertLess(used, room - 16, "less than 16 bytes of stack left")
         kb.release(A, (2, 4), *self.ROW2[:5], self.RSFT_KEY, ms=40)
+
+    def interrupt_depth(self, kb, handler, n):
+        """The most stack an interrupt handler takes over n of its runs: on
+        each entry the stack above SP is painted, the run goes on to the
+        return address, and the highest byte written counts from the SP
+        before the interrupt's own push."""
+        depth = 0
+        for _ in range(n):
+            kb.cmd("delete")
+            kb.brk(handler)
+            self.assertEqual(kb.stopped_at(kb.run()), handler)
+            sp = kb.get_sfr(0x81)
+            ret = kb.get_iram(sp, 1)[0] << 8 | kb.get_iram(sp - 1, 1)[0]  # PCL pushed first, then PCH
+            kb.paint_stack()
+            kb.cmd("delete")
+            kb.brk(ret)
+            kb.run()
+            depth = max(depth, kb.stack_highwater(base=sp) + 2)
+        kb.cmd("delete")
+        return depth
+
+    def test_stack_through_a_replay_over_the_radio(self):
+        """The same replay in the 2.4 GHz position, with US-JIS on in the usjis
+        image: the reports go into the radio queue (a deeper chain than the
+        USB send), through the US-JIS substitution and the Right Shift hook.
+        In a wireless position a Timer2 tick (the scan or an LED subframe, the
+        deepest interrupt at level 0 there; USB is off) can nest on that path,
+        and the EUART0 interrupt (level 3) on top of the tick. The replay's
+        high-water and the two interrupts' own depths are measured; their sum
+        keeps 16 bytes free."""
+        kb = self.rig()
+        for col, row in self.ROW2[:4]:
+            kb.set_keycode(2, row, col, self.KC_TRNS)
+        kb.switch(SWITCH_24G, 200)
+        kb.status(0, 3)
+        kb.ms(700)
+        if _layout(self.FW) == "usjis":
+            kb.press(self.fn_key(), ms=20)
+            kb.tap(self.TAB_KEY, hold=40, after=40)    # Fn + Tab: US-JIS on
+            kb.release(self.fn_key(), ms=40)
+            usjis = kb.get_xram(kb._a("user_settings") + 9)[0]
+            self.assertEqual(usjis, 1, "US-JIS on")
+        tick = self.interrupt_depth(kb, kb._a("systick_interrupt_handler"), 40)
+        ms_tick = self.interrupt_depth(kb, kb._a("pwm4_ms_tick_interrupt_handler"), 10)
+        m = kb.mark()
+        kb.press(A, ms=20)
+        # seven presses wait (the queue holds eight), so 3's release, after
+        # the stack is painted, decides A and replays them
+        held = [(2, 4)] + self.ROW2[:4] + [self.QUOT_KEY, self.RSFT_KEY]
+        for key in held:
+            kb.press(key, ms=15)
+        kb.press(self.N3_KEY, ms=20)
+        kb.paint_stack()
+        kb.release(self.N3_KEY, ms=300)
+        sent = [f for f in kb.frames(m) if len(f) > 1 and f[1] == 0x02]
+        self.assertGreater(len(sent), 3, "the waiting keys went out over the radio")
+        used = kb.stack_highwater()
+        # the releases' frames run the EUART0 interrupt (each byte sent)
+        for key in [A] + held:
+            kb.keys.release(*key)
+        uart =self.interrupt_depth(kb, kb._a("rf_euart0_interrupt_handler"), 8)
+        kb.ms(100)
+        room = kb.STACK_TOP - kb.stack_base
+        worst = used + max(tick, ms_tick) + uart
+        print(f"\n[via] layer-tap replay over 2.4 GHz: stack {used}/{room} bytes; with a Timer2 tick ({tick}) "
+              f"and the EUART0 interrupt ({uart}) nested: {worst}/{room}")
+        self.assertLess(worst, room - 16, "less than 16 bytes of stack left")
 
     def test_a_layer_past_the_keymap_sends_nothing_when_held(self):
         kb = self.rig(layer=5)

@@ -157,6 +157,23 @@
 #define SETTINGS_RESET_HOLD_KEY KC_BSPC
 #define SETTINGS_RESET_KEY      KC_V
 
+// The layer-tap keys (matrix.c): a release that waits for the decision although
+// it is a basic key, because kb.c holds a state on it that the waiting keys
+// need: SETTINGS_RESET_HOLD_KEY while it keeps the reset chord armed (a waiting
+// SETTINGS_RESET_KEY press must find it armed), and the grave key while it
+// gives ~ with a Shift of its own (a waiting key must still get that Shift);
+// and every release while a US-JIS mode change waits for all keys up (the
+// waiting presses must still see the old mode).
+bool kb_lt_release_waits(uint16_t keycode);
+#define LT_RELEASE_WAITS(keycode) kb_lt_release_waits(keycode)
+// A key press the layer-tap keys hold or queue counts as activity at once (the
+// idle sleep), before it reaches kb_process_record.
+void kb_key_activity(void);
+#define LT_PRESS_ACTIVITY() kb_key_activity()
+// The middle status LED shows a held layer-tap key's layer (indicators.c):
+// matrix.c keeps layer_tap_held for it.
+#define LAYER_TAP_HELD 1
+
 uint8_t layout_os_base_layer(bool is_mac);
 bool    layout_is_fn_layer(uint8_t layer);
 

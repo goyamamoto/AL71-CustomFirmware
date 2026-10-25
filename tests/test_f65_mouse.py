@@ -18,8 +18,8 @@ and SMK_F65_ANSI_VIA_FIRMWARE, as for test_f65_via.
 import re
 import unittest
 
-from test_f65_via import ViaCase, ViaF65, VIA_FW, VIA_ANSI_FW, A, _need
-from f65_radio import SWITCH_USB, SWITCH_24G
+from test_f65_via import ViaCase, VIA_ANSI_FW, A
+from f65_radio import SWITCH_24G
 from f65_devices import reports
 
 REPORT_ID_MOUSE = 4
@@ -27,7 +27,7 @@ KC_MS_UP, KC_MS_DOWN, KC_MS_LEFT, KC_MS_RIGHT = 0xCD, 0xCE, 0xCF, 0xD0
 KC_MS_BTN1, KC_MS_BTN2 = 0xD1, 0xD2
 KC_MS_WH_UP = 0xD9
 KC_MS_ACCEL2 = 0xDF
-S_KEY = (2, 2)
+S_KEY, D_KEY = (2, 2), (3, 2)
 
 
 def s8(b):
@@ -46,9 +46,9 @@ class MouseCase(ViaCase):
                 for p in kb.ep1_packets()[since:] if len(p) == 6 and p[0] == REPORT_ID_MOUSE]
 
     def set_keys(self, kb, **keys):
-        """VIA sets keycodes on the Win base layer: a=..., s=..."""
+        """VIA sets keycodes on the Win base layer: a=..., s=..., d=..."""
         for name, kc in keys.items():
-            col, row = {"a": A, "s": S_KEY}[name]
+            col, row = {"a": A, "s": S_KEY, "d": D_KEY}[name]
             kb.set_keycode(0, row, col, kc)
 
 
@@ -127,6 +127,24 @@ class TestMouseUsb(MouseCase):
         kb.release(A, S_KEY, ms=40)
 
 
+class TestMouseUsbSuspend(MouseCase):
+    def test_a_button_let_go_during_a_suspend_goes_up_after_it(self):
+        """Button 1 down, the host suspends the bus, button 1 up: nothing goes
+        out while suspended; once the bus runs again a report with the button
+        up does, so it does not stay down on the host."""
+        kb = self.kb()
+        self.set_keys(kb, s=KC_MS_BTN1)
+        n = len(kb.ep1_packets())
+        kb.press(S_KEY, ms=40)
+        kb.set_bit("usb", "usb_suspended", 1)
+        kb.release(S_KEY, ms=40)
+        self.assertEqual([r[0] for r in self.mouse(kb, n)], [1], "only the press")
+        kb.set_bit("usb", "usb_suspended", 0)
+        kb.ms(40)
+        self.assertEqual(self.mouse(kb, n)[-1], (0, 0, 0, 0, 0), "the release after the resume")
+        self.assertEqual([r[0] for r in self.mouse(kb, n)], [1, 0])
+
+
 class TestMouseRadio(MouseCase):
     """In the 2.4 GHz position: the short frames carry the mouse fields."""
 
@@ -157,10 +175,154 @@ class TestMouseRadio(MouseCase):
         kb.release(S_KEY, ms=60)
         self.assertEqual([(f[5], s16(f[6], f[7])) for f in self.short_frames(kb, m)], [(1, 0), (0, 0)])
 
+    def test_left_up_and_the_wheel_in_the_short_frame(self):
+        """Negative movement keeps its sign in the 16-bit x and y (high byte
+        0xFF); a wheel step goes in its own byte."""
+        kb = self.kb()
+        self.set_keys(kb, a=KC_MS_LEFT, s=KC_MS_UP, d=KC_MS_WH_UP)
+        self.into_24g(kb)
+        m = kb.mark()
+        kb.press(A, S_KEY, ms=200)
+        kb.release(A, S_KEY, ms=60)
+        moves = [f for f in self.short_frames(kb, m) if s16(f[6], f[7]) or s16(f[8], f[9])]
+        self.assertTrue(moves, "short frames while the keys are held")
+        xs = [(f[6], f[7]) for f in moves if f[6] or f[7]]
+        ys = [(f[8], f[9]) for f in moves if f[8] or f[9]]
+        self.assertTrue(xs and ys, [f[5:12] for f in moves])
+        self.assertTrue(all(hi == 0xFF and s16(lo, hi) < 0 for lo, hi in xs + ys), [f[5:12] for f in moves])
+        both = [f for f in moves if s16(f[6], f[7]) and s16(f[8], f[9])]
+        self.assertTrue(both and all(s16(f[6], f[7]) == s16(f[8], f[9]) for f in both), "diagonal")
+        m = kb.mark()
+        kb.press(D_KEY, ms=40)
+        kb.release(D_KEY, ms=60)
+        wheel = [s8(f[10]) for f in self.short_frames(kb, m) if f[10]]
+        self.assertTrue(wheel and all(w == 1 for w in wheel), wheel)
+        self.assertTrue(all(s16(f[6], f[7]) == 0 and s16(f[8], f[9]) == 0 and f[11] == 0
+                            for f in self.short_frames(kb, m)))
+
+    def test_a_held_mouse_button_keeps_the_board_awake(self):
+        """A drag (button 1 held, no movement) is activity: the idle seconds,
+        put at 55 (the linked sleep comes at 61), go back to 0 while the
+        button is held."""
+        kb = self.kb()
+        self.set_keys(kb, s=KC_MS_BTN1)
+        self.into_24g(kb)
+        kb.press(S_KEY, ms=40)
+        idle_s = kb._xdata_static("f65_rf", "idle_s")
+        kb.cmd("set mem xram 0x%x 0x37 0x00" % idle_s)
+        kb.cmd("set mem xram 0x%x 0x00 0x00" % kb._xdata_static("f65_rf", "idle_ms"))
+        kb.ms(1500)
+        self.assertNotIn("sleep: PCON", kb.stderr_text())
+        lo, hi = kb.get_xram(idle_s, 2)
+        self.assertLess(lo | hi << 8, 2, "the idle seconds start again while the button is held")
+        kb.release(S_KEY, ms=40)
+        kb.cmd("set mem xram 0x%x 0x37 0x00" % idle_s)
+        kb.ms(1500)
+        lo, hi = kb.get_xram(idle_s, 2)
+        self.assertGreaterEqual(lo | hi << 8, 56, "with the button up the idle seconds count again")
+
+    def test_a_held_mouse_button_without_a_host_is_no_activity(self):
+        """Reconnecting (no host linked): a held mouse key does not reset the
+        idle seconds, so a key held down in a bag cannot keep the board awake."""
+        kb = self.kb()
+        self.set_keys(kb, s=KC_MS_BTN1)
+        self.into_24g(kb)
+        kb.status(0, 2)                               # reconnecting
+        kb.ms(50)
+        kb.press(S_KEY, ms=40)
+        idle_s = kb._xdata_static("f65_rf", "idle_s")
+        kb.cmd("set mem xram 0x%x 0x03 0x00" % idle_s)
+        kb.cmd("set mem xram 0x%x 0x00 0x00" % kb._xdata_static("f65_rf", "idle_ms"))
+        kb.ms(1500)
+        lo, hi = kb.get_xram(idle_s, 2)
+        self.assertGreaterEqual(lo | hi << 8, 4, "the idle seconds go on counting")
+        kb.release(S_KEY, ms=40)
+
+    def test_a_click_while_the_queue_is_full_still_goes_out(self):
+        """Movement fills the six frames of the queue while the module is busy;
+        button 1 goes down and up meanwhile. Once the module is free, a frame
+        with the button down goes out, then one with it up."""
+        kb = self.kb()
+        self.set_keys(kb, a=KC_MS_RIGHT, s=KC_MS_BTN1)
+        self.into_24g(kb)
+        kb.ms(700)
+        kb.radio.ready(False)
+        kb.press(A, ms=300)
+        kb.tap(S_KEY, hold=40, after=40)
+        kb.release(A, ms=20)
+        m = kb.mark()
+        kb.radio.ready(True)
+        kb.ms(300)
+        btns = [f[5] for f in self.short_frames(kb, m)]
+        self.assertIn(1, btns, btns)
+        self.assertEqual(btns[-1], 0, btns)
+        self.assertIn(0, btns[btns.index(1):], "the release after the press")
+
+    def test_two_clicks_while_the_queue_is_full_both_go_out(self):
+        """Button 1 clicked twice while movement waits for a busy module: the
+        four button states wait apart from the movement, and both clicks go
+        out once the module is free."""
+        kb = self.kb()
+        self.set_keys(kb, a=KC_MS_RIGHT, s=KC_MS_BTN1)
+        self.into_24g(kb)
+        kb.ms(700)
+        kb.radio.ready(False)
+        kb.press(A, ms=300)
+        kb.tap(S_KEY, hold=40, after=40)
+        kb.tap(S_KEY, hold=40, after=40)
+        kb.release(A, ms=20)
+        m = kb.mark()
+        kb.radio.ready(True)
+        kb.ms(400)
+        btns = [f[5] for f in self.short_frames(kb, m)]
+        downs = sum(1 for a, b in zip([0] + btns, btns) if a == 0 and b == 1)
+        self.assertEqual(downs, 2, btns)
+        self.assertEqual(btns[-1], 0, btns)
+
+    def test_a_key_tapped_while_mouse_frames_wait_still_goes_out(self):
+        """Movement waits for a busy module; D is tapped meanwhile. Once the
+        module is free, a key report with D down goes out, then one with it
+        up: mouse reports leave the last two queue slots to key reports."""
+        kb = self.kb()
+        self.set_keys(kb, a=KC_MS_RIGHT)
+        self.into_24g(kb)
+        kb.ms(700)
+        kb.radio.ready(False)
+        kb.press(A, ms=300)
+        kb.tap(D_KEY, hold=40, after=40)
+        kb.release(A, ms=20)
+        m = kb.mark()
+        kb.radio.ready(True)
+        kb.ms(300)
+        longs = [f for f in reports(kb.frames(m)) if f[1] == 0x02]
+        has_d = [0x07 in f[3:8] for f in longs]
+        self.assertIn(True, has_d, [f[2:9] for f in longs])
+        self.assertIn(False, has_d[has_d.index(True):], "D up after D down")
+
+    def test_a_media_key_tapped_while_mouse_frames_wait_still_goes_out(self):
+        """Movement waits for a busy module; Mute (at D) is tapped meanwhile.
+        Consumer changes may use the slots kept from mouse frames, so once
+        the module is free a short frame with Mute goes out, then one without."""
+        kb = self.kb()
+        self.set_keys(kb, a=KC_MS_RIGHT, d=0xA8)       # KC_AUDIO_MUTE
+        self.into_24g(kb)
+        kb.ms(700)
+        kb.radio.ready(False)
+        kb.press(A, ms=300)
+        kb.tap(D_KEY, hold=40, after=40)
+        kb.release(A, ms=20)
+        m = kb.mark()
+        kb.radio.ready(True)
+        kb.ms(300)
+        usages = [f[2] | f[3] << 8 for f in self.short_frames(kb, m)]
+        self.assertIn(0x00E2, usages, usages)
+        self.assertIn(0, usages[usages.index(0x00E2):], "Mute up after Mute down")
+
     def test_the_movement_does_not_run_on_after_a_busy_module(self):
         """The module busy (P4.7 low) while the key is held: once it is free,
-        the six frames the queue holds go out, then at most two frames' worth
-        (254), then nothing more."""
+        the four frames mouse reports may take in the queue go out (the last
+        two slots stay for key reports), then at most two frames' worth (254),
+        then nothing more."""
         kb = self.kb()
         self.set_keys(kb, a=KC_MS_RIGHT)
         self.into_24g(kb)
@@ -172,9 +334,8 @@ class TestMouseRadio(MouseCase):
         kb.radio.ready(True)
         kb.ms(200)
         xs = [s16(f[6], f[7]) for f in self.short_frames(kb, m)]
-        self.assertTrue(xs, "the waiting movement goes out")
-        self.assertLessEqual(len(xs), 6 + 2, xs)
-        self.assertLessEqual(sum(xs[6:]), 254, xs)
+        self.assertEqual(len(xs), 4 + 2, xs)
+        self.assertEqual(xs[4:], [127, 127], "the two frames' worth that waited, no more")
 
 
 class TestMouseUsbAnsi(TestMouseUsb):
